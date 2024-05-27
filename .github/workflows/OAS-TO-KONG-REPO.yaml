@@ -90,7 +90,7 @@ jobs:
         run: |
           FILE_CONTENT=$(cat api/Apiconfig/${{ env.SPEC_FILE }})
           echo $FILE_CONTENT
-          yq eval -i '.services[].plugins[] |= (select(.name == "oas-validation") | .config.api_spec = "$FILE_CONTENT" )' kong.yaml
+          yq eval -i '.services[].plugins[] |= (select(.name == "oas-validation") | .config.api_spec = $FILE_CONTENT )' kong.yaml
           cat kong.yaml
 
       - name: Push artifact to Kong Repo
