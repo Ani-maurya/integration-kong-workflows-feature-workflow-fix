@@ -82,11 +82,13 @@ jobs:
         run:  cat kong.yaml | deck file add-plugins ./global-config/${{ github.event.inputs.environment }}/service-level-plugins.yaml -o kong.yaml
 
       - name: Validate Kong configuration file against linting ruleset
-        run:  deck file lint -s kong.yaml ./api/Apiconfig/rulesets-kong.yaml    
+        run: |  
+          deck file lint -s kong.yaml ./api/Apiconfig/rulesets-kong.yaml
+          cat kong.yaml    
       
       - name: Dynamically adding the API spec to OAS validation
         run: |
-          FILE_CONTENT=$(< cat api/Apiconfig/${{ env.SPEC_FILE }})
+          FILE_CONTENT=$(cat api/Apiconfig/${{ env.SPEC_FILE }})
           echo $FILE_CONTENT
           yq eval -i '.services[].plugins[] |= (select(.name == "oas-validation") | .config.api_spec = "$FILE_CONTENT" )' kong.yaml
           cat kong.yaml
