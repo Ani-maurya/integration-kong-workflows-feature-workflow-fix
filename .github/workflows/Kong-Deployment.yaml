@@ -24,7 +24,7 @@ jobs:
       - name: Checkout code from API repo
         uses: actions/checkout@v2
         with:
-          repository: 'UoS-IT-Services/${{ github.event.inputs.api_repo_name }}'
+          repository: 'Ani-maurya/${{ github.event.inputs.api_repo_name }}'
           ref: '${{ github.event.inputs.api_repo_branch }}'
           path: api
 
@@ -100,7 +100,7 @@ jobs:
       - name: Checkout Code from another repository
         uses: actions/checkout@v2
         with:
-          repository: UoS-IT-Services/${{ github.event.inputs.api_repo_name }}
+          repository: Ani-maurya/${{ github.event.inputs.api_repo_name }}
           ref: ${{ github.event.inputs.api_repo_branch }}
           token: ${{ secrets.INTEGRATION_GH_PAT }}
 
