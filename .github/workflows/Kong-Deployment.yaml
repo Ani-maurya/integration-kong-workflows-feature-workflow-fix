@@ -57,15 +57,15 @@ jobs:
           fi
           echo "Found Kong file: $KONG_FILE"   
 
-      - name: Configure the upstream host
-        run: |
-          if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
-            yq eval -i 'select(.services[]) | .services[].host = "${{ vars.UPSTREAM_URL_DEV}}"' ./api/Apiconfig/Kongconfig/$KONG_FILE
-          elif [ "${{ github.event.inputs.environment }}" == "test" ]; then
-            yq eval -i 'select(.services[]) | .services[].host = "${{ vars.UPSTREAM_URL_TEST}}"' ./api/Apiconfig/Kongconfig/$KONG_FILE
-          elif [ "${{ github.event.inputs.environment}}" == "prod" ]; then
-            yq eval -i 'select(.services[]) | .services[].host = ${{ vars.UPSTREAM_URL_PROD}}' ./api/Apiconfig/Kongconfig/$KONG_FILE 
-          fi   
+      # - name: Configure the upstream host
+      #   run: |
+      #     if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+      #       yq eval -i 'select(.services[]) | .services[].host = "${{ vars.UPSTREAM_URL_DEV}}"' ./api/Apiconfig/Kongconfig/$KONG_FILE
+      #     elif [ "${{ github.event.inputs.environment }}" == "test" ]; then
+      #       yq eval -i 'select(.services[]) | .services[].host = "${{ vars.UPSTREAM_URL_TEST}}"' ./api/Apiconfig/Kongconfig/$KONG_FILE
+      #     elif [ "${{ github.event.inputs.environment}}" == "prod" ]; then
+      #       yq eval -i 'select(.services[]) | .services[].host = ${{ vars.UPSTREAM_URL_PROD}}' ./api/Apiconfig/Kongconfig/$KONG_FILE 
+      #     fi   
 
       - name: Validate Kong configuration file against linting ruleset
         run:  deck file lint -s ./api/Apiconfig/Kongconfig/$KONG_FILE ./api/Apiconfig/rulesets-kong.yaml  
@@ -74,15 +74,15 @@ jobs:
         run:  deck gateway ping --konnect-token ${{ secrets.DECK_TOKEN }} 
   
       - name: Backup existing configuration
-        run:  deck gateway dump --konnect-token ${{ secrets.DECK_TOKEN }}  --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp" --select-tag=${{ github.event.inputs.environment }} --tls-skip-verify > kong-backup.yaml        
+        run:  deck gateway dump --konnect-token ${{ secrets.DECK_TOKEN }}  --konnect-control-plane-name A-1 --select-tag=${{ github.event.inputs.environment }} --tls-skip-verify > kong-backup.yaml        
 
       - name: Diff between old and new configuration (deck diff)
         run: |
-          deck gateway diff --select-tag ${{ github.event.inputs.environment }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp" 
+          deck gateway diff --select-tag ${{ github.event.inputs.environment }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1 
 
       - name: Apply new configuration (deck sync)
         run: |
-          deck gateway sync --select-tag ${{ github.event.inputs.environment }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp"
+          deck gateway sync --select-tag ${{ github.event.inputs.environment }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1
    
       # - name: Run API Tests
       #   id: apiTests
@@ -90,7 +90,7 @@ jobs:
      
       - name: Back out changes on failure
         if: always() && steps.apiTests.outcome == 'failure'
-        run :  deck gateway sync --select-tag ${{ github.event.inputs.environment }} kong-backup.yaml  --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp"  --tls-skip-verify
+        run :  deck gateway sync --select-tag ${{ github.event.inputs.environment }} kong-backup.yaml  --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1 --tls-skip-verify
 
   publish-customer-api-to-portal:
     name: Publish OAS to dev portal
