@@ -30,14 +30,14 @@ jobs:
       - name: Checkout global config code 
         uses: actions/checkout@v2
         with:
-          repository: 'UoS-IT-Services/${{ github.event.inputs.global_config_repo_name }}'
+          repository: 'Ani-maurya/${{ github.event.inputs.global_config_repo_name }}'
           ref: '${{ github.event.inputs.gobal_config_branch }}'
           path: global-config
       
       - name: Checkout code from API repo
         uses: actions/checkout@v2
         with:
-          repository: 'UoS-IT-Services/${{ github.event.inputs.api_repo_name }}'
+          repository: 'Ani-maurya/${{ github.event.inputs.api_repo_name }}'
           ref: '${{ github.event.inputs.api_repo_branch }}'
           path: api
 
