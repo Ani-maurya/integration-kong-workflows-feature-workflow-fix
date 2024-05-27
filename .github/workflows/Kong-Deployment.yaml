@@ -284,22 +284,3 @@ jobs:
                 }'       
           fi      
           
-                         
-  Terminate_ec2_instance:
-    runs-on: ubuntu-latest
-    needs: [start-runner, Kong-deployment,publish-customer-api-to-portal]
-    env:
-      Ec2_Instance_Id: ${{ needs.start-runner.outputs.ec2-instance-id }}
-    if: always()
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ID }}:role/GitHub_AWS
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Terminate ec2 instance
-        run: |
-          echo "This job always runs at the end of the pipeline."
-          echo "Instance_id : $Ec2_Instance_Id"
-          aws ec2 terminate-instances --instance-ids $Ec2_Instance_Id
