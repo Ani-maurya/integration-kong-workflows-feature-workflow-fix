@@ -26,6 +26,7 @@ jobs:
         with:
           repository: 'Ani-maurya/${{ github.event.inputs.api_repo_name }}'
           ref: '${{ github.event.inputs.api_repo_branch }}'
+          token: ${{ secrets.PAT }}
           path: api
 
       - name: Download jq

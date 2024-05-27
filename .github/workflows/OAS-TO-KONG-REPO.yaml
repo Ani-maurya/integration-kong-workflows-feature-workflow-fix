@@ -32,6 +32,7 @@ jobs:
         with:
           repository: 'Ani-maurya/${{ github.event.inputs.global_config_repo_name }}'
           ref: '${{ github.event.inputs.gobal_config_branch }}'
+          token: ${{ secrets.PAT }}
           path: global-config
       
       - name: Checkout code from API repo
@@ -39,6 +40,7 @@ jobs:
         with:
           repository: 'Ani-maurya/${{ github.event.inputs.api_repo_name }}'
           ref: '${{ github.event.inputs.api_repo_branch }}'
+          token: ${{ secrets.PAT }}
           path: api
 
       - name: Download jq
