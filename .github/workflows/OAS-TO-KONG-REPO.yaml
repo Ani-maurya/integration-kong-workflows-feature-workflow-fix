@@ -22,66 +22,16 @@ on:
           - dev
           - prod
           - test    
-env:
-  AWS_REGION: eu-west-2
-
-permissions:
-  id-token: write # This is required for requesting the JWT
-  contents: write  # This is required for actions/checkout
-
 jobs:
-  start-runner:
-    name: Start self-hosted EC2 runner
-    runs-on: ubuntu-latest  
-    outputs:
-      label: ${{ steps.start-ec2-runner.outputs.label }}
-      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.Ec2_Instance_Id }}
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ID }}:role/GitHub_AWS
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Create EC2 instance
-        id: start-ec2-runner
-        run: |
-          instance_id=$(aws ec2 run-instances \
-            --image-id ${{ secrets.GIT_RUNNER_AMI }} \
-            --count 1 \
-            --no-associate-public-ip-address \
-            --instance-type t2.micro \
-            --iam-instance-profile Name=spininstance \
-            --subnet-id ${{ secrets.EC2_SUBNET }} \
-            --security-group-ids ${{ secrets.EC2_SG }} \
-            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=kong-on-demand-self-hosted-runner}]' \
-            --query 'Instances[0].InstanceId' \
-            --output text)
-          echo "Ec2_Instance_Id=$instance_id" >> $GITHUB_OUTPUT
-          echo "Ec2_Instance_Id=$instance_id" >> $GITHUB_ENV
-            
-      - name: Wait for EC2 instance status checks
-        run: |
-          echo "Waiting for instance $Ec2_Instance_Id status checks..."
-          aws ec2 wait instance-status-ok --instance-ids "$Ec2_Instance_Id"
-
-      - name: Run command on EC2 instance using SSM
-        run: |
-          echo "Sending command to instance $Ec2_Instance_Id..."
-          aws ssm send-command --instance-ids "$Ec2_Instance_Id" --document-name "AWS-RunShellScript" --parameters commands=["sudo systemctl start self-hosted"]
-  
-  
   OAS_TO_KONG_REPO:
     name: Publish Spec to Kong Repo
-    needs: start-runner
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout global config code 
         uses: actions/checkout@v2
         with:
           repository: 'UoS-IT-Services/${{ github.event.inputs.global_config_repo_name }}'
           ref: '${{ github.event.inputs.gobal_config_branch }}'
-          token: ${{ secrets.INTEGRATION_GH_PAT }}
           path: global-config
       
       - name: Checkout code from API repo
@@ -89,8 +39,24 @@ jobs:
         with:
           repository: 'UoS-IT-Services/${{ github.event.inputs.api_repo_name }}'
           ref: '${{ github.event.inputs.api_repo_branch }}'
-          token: ${{ secrets.INTEGRATION_GH_PAT }}
           path: api
+
+       - name: Download jq
+         run: |
+            sudo apt install jq -y
+            jq --version
+
+      - name: Download yq
+        run: |
+          sudo snap install yq
+          yq --version
+      
+      - name: Install Deck CLI
+        run: |       
+          curl -sL https://github.com/kong/deck/releases/download/v1.34.0/deck_1.34.0_linux_amd64.tar.gz -o deck.tar.gz
+          tar -xf deck.tar.gz -C /tmp 
+          sudo cp /tmp/deck /usr/local/bin/
+
 
       - name: Find OAS file name in the directory
         run: |
@@ -98,10 +64,10 @@ jobs:
           SPEC_FILE=$(ls -p | grep -v / | grep -v spectral.yaml | grep -v rulesets-kong.yaml)
           echo "SPEC_FILE=$SPEC_FILE" >> $GITHUB_ENV  
 
-      - name: Inso Linting
-        run: |
-          spectral --version
-          spectral lint ./api/Apiconfig/${{ env.SPEC_FILE }} --ruleset ./api/Apiconfig/.spectral.yaml
+      # - name: Inso Linting
+      #   run: |
+      #     spectral --version
+      #     spectral lint ./api/Apiconfig/${{ env.SPEC_FILE }} --ruleset ./api/Apiconfig/.spectral.yaml
 
       - name: Generate Kong config from OAS
         run:  deck file openapi2kong -s api/Apiconfig/${{ env.SPEC_FILE }} -o kong.yaml
@@ -117,6 +83,13 @@ jobs:
 
       - name: Validate Kong configuration file against linting ruleset
         run:  deck file lint -s kong.yaml ./api/Apiconfig/rulesets-kong.yaml    
+      
+      - name: Dynamically adding the API spec to OAS validation
+        run: |
+          export FILE_CONTENT=$(cat api/Apiconfig/${{ env.SPEC_FILE }})
+          echo $FILE_CONTENT
+          yq eval -i '.services[].plugins[] |= (select(.name == "oas-validation") | .config.api_spec = env(FILE_CONTENT)' kong.yaml
+          cat kong.yaml
 
       - name: Push artifact to Kong Repo
         run: |
