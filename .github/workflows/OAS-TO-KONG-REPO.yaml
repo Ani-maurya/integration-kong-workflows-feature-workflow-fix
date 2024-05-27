@@ -41,10 +41,10 @@ jobs:
           ref: '${{ github.event.inputs.api_repo_branch }}'
           path: api
 
-       - name: Download jq
-         run: |
-            sudo apt install jq -y
-            jq --version
+      - name: Download jq
+        run: |
+          sudo apt install jq -y
+          jq --version
 
       - name: Download yq
         run: |

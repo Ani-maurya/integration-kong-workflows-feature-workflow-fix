@@ -29,9 +29,9 @@ jobs:
           path: api
 
       - name: Download jq
-         run: |
-            sudo apt install jq -y
-            jq --version
+        run: |
+          sudo apt install jq -y
+          jq --version
 
       - name: Download yq
         run: |
