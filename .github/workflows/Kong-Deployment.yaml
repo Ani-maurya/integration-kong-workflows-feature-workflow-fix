@@ -45,6 +45,12 @@ jobs:
           tar -xf deck.tar.gz -C /tmp 
           sudo cp /tmp/deck /usr/local/bin/
 
+      - name: Find OAS file name in the directory
+        run: |
+          cd api/Apiconfig
+          SPEC_FILE=$(ls -p | grep -v / | grep -v spectral.yaml | grep -v rulesets-kong.yaml)
+          echo "SPEC_FILE=$SPEC_FILE" >> $GITHUB_ENV  
+          
       - name: Find Kong file name in the directory
         run: |
           cd ./api/Apiconfig/Kongconfig
@@ -66,6 +72,13 @@ jobs:
       #     elif [ "${{ github.event.inputs.environment}}" == "prod" ]; then
       #       yq eval -i 'select(.services[]) | .services[].host = ${{ vars.UPSTREAM_URL_PROD}}' ./api/Apiconfig/Kongconfig/$KONG_FILE 
       #     fi   
+
+      - name: Get API product name for tag
+        run:  echo "API_PRODUCT_NAME=$(yq e '.info.title' ./api/Apiconfig/$SPEC_FILE | sed 's/ /-/g')" >> $GITHUB_ENV
+    
+      - name: Add Basic Auth headers to request transformer plugin
+        run: |
+         yq eval -i '.services[].plugins[] |= (select(.name == "request-transformer") | .config.replace.headers[0] = "Authorization: ${{ secrets.BASIC_AUTH_MICROSERVICE_DEV }}")' ./api/Apiconfig/Kongconfig/$KONG_FILE
 
       - name: Validate Kong configuration file against linting ruleset
         run:  deck file lint -s ./api/Apiconfig/Kongconfig/$KONG_FILE ./api/Apiconfig/rulesets-kong.yaml  

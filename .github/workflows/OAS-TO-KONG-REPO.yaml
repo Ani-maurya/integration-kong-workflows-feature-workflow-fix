@@ -59,7 +59,6 @@ jobs:
           tar -xf deck.tar.gz -C /tmp 
           sudo cp /tmp/deck /usr/local/bin/
 
-
       - name: Find OAS file name in the directory
         run: |
           cd api/Apiconfig
@@ -93,7 +92,6 @@ jobs:
           export FILE_CONTENT=$(cat api/Apiconfig/${{ env.SPEC_FILE }})
           echo $FILE_CONTENT
           yq eval -i '.services[].plugins[] |= (select(.name == "oas-validation") | .config.api_spec += strenv(FILE_CONTENT))' kong.yaml
-          cat kong.yaml
 
       - name: Push artifact to Kong Repo
         run: |
