@@ -76,7 +76,7 @@ jobs:
       - name: Get API product name for tag
         run: | 
          echo "API_PRODUCT_NAME=$(yq e '.info.title' ./api/Apiconfig/$SPEC_FILE | sed 's/ /-/g' | awk -F'-' '{print $1}')" >> $GITHUB_ENV
-         echo "${{ env.API_PRODUCT_NAME }}" 
+         echo ${{ env.API_PRODUCT_NAME }} 
       - name: Add Basic Auth headers to request transformer plugin
         run: |
          yq eval -i '.services[].plugins[] |= (select(.name == "request-transformer") | .config.replace.headers[0] = "Authorization: ${{ secrets.BASIC_AUTH_MICROSERVICE_DEV }}")' ./api/Apiconfig/Kongconfig/$KONG_FILE
