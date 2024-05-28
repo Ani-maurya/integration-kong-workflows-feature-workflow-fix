@@ -88,7 +88,7 @@ jobs:
 
       - name: Add Issuer to open-id plugin
         run: |
-         yq eval -i '.services[].plugins[] |= (select(.name == "openid-connect") | .config.issuer = https://cognito-idp.eu-west-2.amazonaws.com/eu-west-2_pmhLhUYdx)' ./api/Apiconfig/Kongconfig/$KONG_FILE
+         yq eval -i '.services[].plugins[] |= (select(.name == "openid-connect") | .config.issuer = "https://cognito-idp.eu-west-2.amazonaws.com/eu-west-2_pmhLhUYdx")' ./api/Apiconfig/Kongconfig/$KONG_FILE
          cat ./api/Apiconfig/Kongconfig/$KONG_FILE
 
       - name: Validate Kong configuration file against linting ruleset
