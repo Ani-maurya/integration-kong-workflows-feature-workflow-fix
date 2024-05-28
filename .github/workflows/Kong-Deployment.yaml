@@ -1,0 +1,351 @@
+name: Kong-Deployment    
+on:
+  workflow_dispatch:
+    inputs:
+      api_repo_name:
+        description: 'API Repository name'
+        required: true
+      api_repo_branch:
+        description: Choose the branch name for API Repository
+        required: true
+      environment:
+        description: 'The environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+          - test    
+env:
+  AWS_REGION: eu-west-2
+
+permissions:
+  id-token: write # This is required for requesting the JWT
+  contents: write  # This is required for actions/checkout
+
+jobs:
+  start-runner:
+    name: Start self-hosted EC2 runner
+    runs-on: ubuntu-latest  
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.Ec2_Instance_Id }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ID }}:role/GitHub_AWS
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create EC2 instance
+        id: start-ec2-runner
+        run: |
+          instance_id=$(aws ec2 run-instances \
+            --image-id ${{ secrets.GIT_RUNNER_AMI }} \
+            --count 1 \
+            --no-associate-public-ip-address \
+            --instance-type t2.micro \
+            --iam-instance-profile Name=spininstance \
+            --subnet-id ${{ secrets.EC2_SUBNET }} \
+            --security-group-ids ${{ secrets.EC2_SG }} \
+            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=kong-on-demand-self-hosted-runner}]' \
+            --query 'Instances[0].InstanceId' \
+            --output text)
+          echo "Ec2_Instance_Id=$instance_id" >> $GITHUB_OUTPUT
+          echo "Ec2_Instance_Id=$instance_id" >> $GITHUB_ENV
+            
+      - name: Wait for EC2 instance status checks
+        run: |
+          echo "Waiting for instance $Ec2_Instance_Id status checks..."
+          aws ec2 wait instance-status-ok --instance-ids "$Ec2_Instance_Id"
+
+      - name: Run command on EC2 instance using SSM
+        run: |
+          echo "Sending command to instance $Ec2_Instance_Id..."
+          aws ssm send-command --instance-ids "$Ec2_Instance_Id" --document-name "AWS-RunShellScript" --parameters commands=["sudo systemctl start self-hosted"]
+  
+  Kong-deployment:
+    name: Deploy to Kong Gateway
+    needs: start-runner
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code from API repo
+        uses: actions/checkout@v2
+        with:
+          repository: 'UoS-IT-Services/${{ github.event.inputs.api_repo_name }}'
+          ref: '${{ github.event.inputs.api_repo_branch }}'
+          token: ${{ secrets.INTEGRATION_GH_PAT }}
+          path: api
+          
+      - name: Find OAS file name in the directory
+        run: |
+          cd api/Apiconfig
+          SPEC_FILE=$(ls -p | grep -v / | grep -v spectral.yaml | grep -v rulesets-kong.yaml)
+          echo "SPEC_FILE=$SPEC_FILE" >> $GITHUB_ENV
+          
+      - name: Find Kong file name in the directory
+        run: |
+          cd ./api/Apiconfig/Kongconfig
+          KONG_FILE=$(find . -type f -name 'Kong*' | head -n 1)
+          echo "KONG_FILE=$KONG_FILE" >> $GITHUB_ENV
+
+          if [[ -z "$KONG_FILE" ]]; then
+            echo "No file starting with 'Kong' found."
+            exit 1
+          fi
+          echo "Found Kong file: $KONG_FILE"   
+
+      - name: Configure the upstream host
+        run: |
+          if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+            yq eval -i 'select(.services[]) | .services[].host = "${{ vars.UPSTREAM_URL_DEV}}"' ./api/Apiconfig/Kongconfig/$KONG_FILE
+          elif [ "${{ github.event.inputs.environment }}" == "test" ]; then
+            yq eval -i 'select(.services[]) | .services[].host = "${{ vars.UPSTREAM_URL_TEST}}"' ./api/Apiconfig/Kongconfig/$KONG_FILE
+          elif [ "${{ github.event.inputs.environment}}" == "prod" ]; then
+            yq eval -i 'select(.services[]) | .services[].host = ${{ vars.UPSTREAM_URL_PROD}}' ./api/Apiconfig/Kongconfig/$KONG_FILE 
+          fi   
+        
+      - name: Get API product name for tag
+        run:  echo "API_PRODUCT_NAME=$(yq e '.info.title' ./api/Apiconfig/$SPEC_FILE | sed 's/ /-/g')" >> $GITHUB_ENV
+
+      - name: Add Basic Auth headers to request transformer plugin
+        run: |
+         yq eval -i '.services[].plugins[] |= (select(.name == "request-transformer") | .config.replace.headers[0] = "Authorization: ${{ secrets.BASIC_AUTH_MICROSERVICE_DEV }}")' ./api/Apiconfig/Kongconfig/$KONG_FILE
+
+      - name: Validate Kong configuration file against linting ruleset
+        run:  deck file lint -s ./api/Apiconfig/Kongconfig/$KONG_FILE ./api/Apiconfig/rulesets-kong.yaml  
+
+      - name: Ping to Konnect Org
+        run:  deck gateway ping --konnect-token ${{ secrets.DECK_TOKEN }} 
+  
+      - name: Backup existing configuration
+        run:  deck gateway dump --konnect-token ${{ secrets.DECK_TOKEN }}  --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp" --select-tag=${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} --tls-skip-verify > kong-backup.yaml        
+
+      - name: Diff between old and new configuration (deck diff)
+        run: |
+          deck gateway diff --select-tag ${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp" 
+
+      - name: Apply new configuration (deck sync)
+        run: |
+          deck gateway sync --select-tag ${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp"
+   
+      # - name: Run API Tests
+      #   id: apiTests
+      #   run: inso run test "spc_7d3cb5"
+     
+      - name: Back out changes on failure
+        if: always() && steps.apiTests.outcome == 'failure'
+        run :  deck gateway sync --select-tag ${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} kong-backup.yaml  --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name "integration1-${{ github.event.inputs.environment }}-cp"  --tls-skip-verify
+
+  publish-customer-api-to-portal:
+    name: Publish OAS to dev portal
+    needs: Kong-deployment
+    runs-on: self-hosted
+    if: ${{ github.event.inputs.environment == 'test' }}
+    steps:
+      - name: Checkout Code from another repository
+        uses: actions/checkout@v2
+        with:
+          repository: UoS-IT-Services/${{ github.event.inputs.api_repo_name }}
+          ref: ${{ github.event.inputs.api_repo_branch }}
+          token: ${{ secrets.INTEGRATION_GH_PAT }}
+
+      - name: Find OAS file name in the directory
+        run: |
+          cd Apiconfig
+          SPEC_FILE=$(ls -p | grep -v / | grep -v spectral.yaml | grep -v rulesets-kong.yaml)
+          echo "SPEC_FILE=$SPEC_FILE" >> $GITHUB_ENV
+
+      - name: Extract Product details
+        id: set_env_vars
+        run: |
+          cd Apiconfig 
+          echo "API_PRODUCT_NAME=$(yq e '.info.title' $SPEC_FILE | sed 's/ /-/g')" >> $GITHUB_ENV
+          echo "API_PRODUCT_DESCRIPTION=$(yq e '.info.description' $SPEC_FILE)" >> $GITHUB_ENV
+          echo "API_PRODUCT_VERSION=$(yq e '.info.version' $SPEC_FILE)" >> $GITHUB_ENV          
+          echo "GW_SERVICE_NAME=$(yq e '.info.title' $SPEC_FILE | sed 's/ /-/g' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "CONTROL_PLANE_NAME=integration1-${{ github.event.inputs.environment }}-cp" >> $GITHUB_ENV
+
+      - name: Check if the API product already exists or create a new one
+        run: |
+          response=$(curl -s --request GET \
+            --url "${{ vars.ADMIN_API_URL }}/api-products" \
+            --header "Authorization: ${{ secrets.PIPELINE_TOKEN }}")
+
+          if [[ $response == *"${{ env.API_PRODUCT_NAME }}"* ]]; then
+            echo "The API product already exists. Retrieving the Product ID. "
+            api_product_id=$(curl --request GET \
+              --url ${{ vars.ADMIN_API_URL }}/api-products \
+              --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+              | jq -r --arg api_product_name "${{ env.API_PRODUCT_NAME }}" '.data[] | select(.name == $api_product_name) | .id' )
+            echo "API_PRODUCT_ID=$api_product_id" >> $GITHUB_ENV    
+              
+          else
+            echo "The API product doesn't exist. Creating it now..."
+            api_product_id=$(curl --request POST \
+              --url ${{ vars.ADMIN_API_URL }}/api-products \
+              --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+              --header 'Content-Type: application/json' \
+              --data '{
+                "name": "${{  env.API_PRODUCT_NAME }}",
+                "description": "${{  env.API_PRODUCT_DESCRIPTION }}",
+                "labels": {}
+              }' | jq -r '.id')
+            echo "API_PRODUCT_ID=$api_product_id" >> $GITHUB_ENV  
+          fi 
+          
+      - name: Get Developer Portal ID
+        run: |
+          Dev_portal_id=$(curl --request GET \
+            --url ${{ vars.ADMIN_API_URL }}/portals \
+            --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+            | jq -r '.data[].id')
+            
+          echo "DEV_PORTAL_ID=$Dev_portal_id" >> $GITHUB_ENV
+
+      - name: Publish product to the dev portal
+        run: |
+          curl --request PATCH \
+          --url ${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID \
+          --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+          --header 'Content-Type: application/json' \
+          --data "{
+            \"portal_ids\":[\"$DEV_PORTAL_ID\"]
+          }"
+
+      - name: Create product version if it doesn't exist
+        run: |
+          CURRENT_PRODUCT_VERSION_ID=$(curl -s --request GET \
+            --url "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions" \
+            --header "Authorization: ${{ secrets.PIPELINE_TOKEN }}" \
+            | jq -r --arg api_version "${{ env.API_PRODUCT_VERSION }}" '.data[] | select(.name == $api_version) | .id // empty')
+              
+          if [ -z "$CURRENT_PRODUCT_VERSION_ID" ]; then
+            echo "> Version $API_PRODUCT_VERSION not found in API Versions for $API_PRODUCT_NAME - creating it..."
+
+            api_product_version_id=$(curl --request POST \
+              --url ${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions \
+              --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+              --header 'Content-Type: application/json' \
+              --data '{
+                "name": "${{ env.API_PRODUCT_VERSION }}",
+                "publish_status": "published"
+              }'| jq -r '.id')     
+            echo "API_PRODUCT_VERSION_ID=$api_product_version_id" >> $GITHUB_ENV  
+          else
+            echo "> Version $API_PRODUCT_VERSION already exists for API $API_NAME with ID $API_PRODUCT_NAME"  
+            echo "API_PRODUCT_VERSION_ID=$CURRENT_PRODUCT_VERSION_ID" >> $GITHUB_ENV 
+          fi
+
+      - name: Get Control Plane ID
+        run: |
+          control_plane_id=$(curl --location '${{ vars.ADMIN_API_URL }}/control-planes' \
+            --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+            | jq -r --arg control_plane_name "${{ env.CONTROL_PLANE_NAME }}" '.data[] | select(.name == $control_plane_name) | .id')
+
+          echo "CONTROL_PLANE_ID=$control_plane_id" >> $GITHUB_ENV
+
+      - name: Get Service ID
+        run: |
+          service_id=$(curl --location "${{ vars.ADMIN_API_URL }}/control-planes/$CONTROL_PLANE_ID/core-entities/services" \
+            --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+            | jq -r --arg gw_service_name "${{ env.GW_SERVICE_NAME }}" '.data[] | select(.name == $gw_service_name) | .id')
+       
+            echo "SERVICE_ID=$service_id" >> $GITHUB_ENV
+            
+      - name: Retrieving current service link information to the api product 
+        run: |
+          # Retrieving information on which API product version is associated with a service link in case of a rollback.
+          rollback_api_product_version=$(curl --location --request GET "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions" \
+                --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+                --header 'Content-Type: application/json' \
+                | jq -r '.data[] | select(.gateway_service != null) | .name' )
+                
+           rollback_api_product_version_id=$(curl --location --request GET "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions" \
+                --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+                --header 'Content-Type: application/json' \
+                | jq -r '.data[] | select(.gateway_service != null) | .id' )     
+          echo "ROLLBACK_SERVICE_LINK_VERSION=$rollback_api_product_version" >> $GITHUB_ENV      
+          echo "ROLLBACK_SERVICE_LINK_VERSION_ID=$rollback_api_product_version_id" >> $GITHUB_ENV      
+
+                
+
+      - name: Link service to the product version
+        run: |
+           echo "Check if current service link product version and the version specified in the OAS specification version is same or not.." 
+           if [[ "${{ env.ROLLBACK_SERVICE_LINK_VERSION }}" != "${{ env.API_PRODUCT_VERSION }}" ]]; then
+           
+           echo "The product version differs; therefore, unlinking the service from ${{ env.ROLLBACK_SERVICE_LINK_VERSION }}"
+           curl --location --request PATCH "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions/$ROLLBACK_SERVICE_LINK_VERSION_ID" \
+              --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+              --header 'Content-Type: application/json' \
+              --data '{
+                "gateway_service": null
+              }'
+
+            echo "Linking the service to ${{ env.API_PRODUCT_VERSION }}"          
+            curl --location --request PATCH "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions/$API_PRODUCT_VERSION_ID" \
+            --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+            --header 'Content-Type: application/json' \
+            --data "{
+                    \"name\": \"${{ env.API_PRODUCT_VERSION }}\",
+                    \"publish_status\": \"published\",
+                    \"deprecated\": false,
+                    \"notify\": true,
+                    \"gateway_service\": {
+                        \"control_plane_id\": \"${{ env.CONTROL_PLANE_ID }}\",
+                        \"id\": \"${{ env.SERVICE_ID }}\"
+                    }
+                  }" 
+           else
+              echo "The product versions match (current - ${{ env.ROLLBACK_SERVICE_LINK_VERSION }} & OAS Spec - ${{ env.API_PRODUCT_VERSION }}); therefore, no changes needed for the service link"
+           fi
+               
+      - name: Upload spec on the version
+        run: |
+          encoded_spec=$(base64 -w 0 Apiconfig/${{ env.SPEC_FILE }})
+          echo "Check if specifications is already there or not .." 
+          
+          specifications_id=$(curl --location --request GET "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions/$API_PRODUCT_VERSION_ID/specifications" \
+            --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+            --header 'Content-Type: application/json' \
+            | jq -r '.data[] | .id' )
+
+          if [ -n "$specifications_id" ]; then
+              echo "Specifications ID: $specifications_id"
+              curl --location --request PATCH "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions/$API_PRODUCT_VERSION_ID/specifications/$specifications_id" \
+              --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+              --header 'Content-Type: application/json' \
+              --data '{
+                      "name": "${{ env.SPEC_FILE }}",
+                      "content": "'"$encoded_spec"'"  
+                }'        
+          else
+            curl --location --request POST "${{ vars.ADMIN_API_URL }}/api-products/$API_PRODUCT_ID/product-versions/$API_PRODUCT_VERSION_ID/specifications" \
+              --header 'Authorization: ${{ secrets.PIPELINE_TOKEN }}' \
+              --header 'Content-Type: application/json' \
+              --data '{
+                      "name": "${{ env.SPEC_FILE }}",
+                      "content": "'"$encoded_spec"'"  
+                }'       
+          fi      
+          
+                         
+  Terminate_ec2_instance:
+    runs-on: ubuntu-latest
+    needs: [start-runner, Kong-deployment,publish-customer-api-to-portal]
+    env:
+      Ec2_Instance_Id: ${{ needs.start-runner.outputs.ec2-instance-id }}
+    if: always()
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ID }}:role/GitHub_AWS
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terminate ec2 instance
+        run: |
+          echo "This job always runs at the end of the pipeline."
+          echo "Instance_id : $Ec2_Instance_Id"
+          aws ec2 terminate-instances --instance-ids $Ec2_Instance_Id
