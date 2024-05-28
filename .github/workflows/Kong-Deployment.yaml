@@ -50,7 +50,7 @@ jobs:
           cd api/Apiconfig
           SPEC_FILE=$(ls -p | grep -v / | grep -v spectral.yaml | grep -v rulesets-kong.yaml)
           echo "SPEC_FILE=$SPEC_FILE" >> $GITHUB_ENV  
-          
+
       - name: Find Kong file name in the directory
         run: |
           cd ./api/Apiconfig/Kongconfig
@@ -74,7 +74,7 @@ jobs:
       #     fi   
 
       - name: Get API product name for tag
-        run:  echo "API_PRODUCT_NAME=$(yq e '.info.title' ./api/Apiconfig/$SPEC_FILE | sed 's/ /-/g')" >> $GITHUB_ENV
+        run:  echo "API_PRODUCT_NAME=$(yq e '.info.title' ./api/Apiconfig/$SPEC_FILE | sed 's/ /-/g' | awk -F'-' '{print $1}')" >> $GITHUB_ENV
     
       - name: Add Basic Auth headers to request transformer plugin
         run: |
@@ -87,15 +87,15 @@ jobs:
         run:  deck gateway ping --konnect-token ${{ secrets.DECK_TOKEN }} 
   
       - name: Backup existing configuration
-        run:  deck gateway dump --konnect-token ${{ secrets.DECK_TOKEN }}  --konnect-control-plane-name A-1 --select-tag=${{ github.event.inputs.environment }} --tls-skip-verify > kong-backup.yaml        
+        run:  deck gateway dump --konnect-token ${{ secrets.DECK_TOKEN }}  --konnect-control-plane-name A-1 --select-tag=${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} --tls-skip-verify > kong-backup.yaml        
 
       - name: Diff between old and new configuration (deck diff)
         run: |
-          deck gateway diff --select-tag ${{ github.event.inputs.environment }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1 
+          deck gateway diff --select-tag ${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1 
 
       - name: Apply new configuration (deck sync)
         run: |
-          deck gateway sync --select-tag ${{ github.event.inputs.environment }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1
+          deck gateway sync --select-tag ${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} ./api/Apiconfig/Kongconfig/$KONG_FILE --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1
    
       # - name: Run API Tests
       #   id: apiTests
@@ -103,7 +103,8 @@ jobs:
      
       - name: Back out changes on failure
         if: always() && steps.apiTests.outcome == 'failure'
-        run :  deck gateway sync --select-tag ${{ github.event.inputs.environment }} kong-backup.yaml  --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1 --tls-skip-verify
+        run :  deck gateway sync --select-tag ${{ github.event.inputs.environment }},${{ env.API_PRODUCT_NAME }} kong-backup.yaml  --konnect-token ${{ secrets.DECK_TOKEN }} --konnect-control-plane-name A-1  --tls-skip-verify
+
 
   publish-customer-api-to-portal:
     name: Publish OAS to dev portal
